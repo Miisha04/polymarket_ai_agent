@@ -1,29 +1,49 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate
+from fastapi.concurrency import run_in_threadpool
 
 app = FastAPI(title="AI Agent Service")
 
-# Инициализируем локальную модель через Ollama
+# Локальная модель Ollama
 llm = OllamaLLM(model="llama3.2") 
 
-# Создаем простую цепочку (Chain) вместо сложного агента с инструментами
-prompt = ChatPromptTemplate.from_template("""
-You are helpful assistent.
+# Простая цепочка prompt → llm
+base_prompt = ChatPromptTemplate.from_template("""
+You are a helpful assistant.
+Here is the conversation so far:
+{history}
+
 User question: {input}
 Answer:
 """)
+chain = base_prompt | llm
 
-chain = prompt | llm
-
+# Входной формат
 class AgentQuery(BaseModel):
-    query: str
+    input: str
+    history: list[dict] | None = None  # [{"role": "user"/"assistant", "content": "..."}]
 
 @app.post("/process")
 async def process(data: AgentQuery):
-    # Генерация ответа локальной моделью
-    result = chain.invoke({"input": data.query})
+    # Формируем текстовую историю для prompt
+    history_text = ""
+    if data.history:
+        for msg in data.history:
+            history_text += f"{msg['role'].capitalize()}: {msg['content']}\n"
+
+    prompt_input = {
+        "input": data.input,
+        "history": history_text.strip()
+    }
+
+    try:
+        # Асинхронный вызов LLM через threadpool
+        result = await run_in_threadpool(chain.invoke, prompt_input)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
+
     return {"output": result}
 
 if __name__ == "__main__":
